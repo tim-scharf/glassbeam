@@ -68,3 +68,4 @@ Thumbs.db
 *.xlsx
 tmp/
 cache/
+output/
