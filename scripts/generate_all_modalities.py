@@ -93,9 +93,7 @@ def build_svg_tree(modality, total_codes, part_data):
     active_branches = [b for b in ["modality","anatomy","timing","pharmaceutical","guidance"] if b in branch_nodes]
     n = len(active_branches)
 
-    # Layout constants — wide viewBox for desktop
-    W         = 1400
-    ROOT_CX   = W // 2
+    # Layout constants
     ROOT_Y    = 30
     ROOT_W, ROOT_H   = 220, 52
     BRANCH_Y         = 150
@@ -104,11 +102,41 @@ def build_svg_tree(modality, total_codes, part_data):
     CHILD_W   = 88    # small pills
     CHILD_H   = 32
     CHILD_GAP = 6
+    CELL_GAP  = 40    # horizontal gap between branch cells
+    MARGIN    = 60
+    MIN_TOTAL_W = 1200
 
-    margin  = 80
-    usable  = W - 2 * margin
-    spacing = usable / max(n - 1, 1) if n > 1 else 0
-    branch_cx = [int(margin + i * spacing) for i in range(n)]
+    # Each branch's children (part types), same set used to draw pills below.
+    branch_children = {
+        bkey: sorted(
+            [(pt, vals) for pt, vals in part_data.items()
+             if pt in PART_TYPE_META and PART_TYPE_META[pt]['branch'] == bkey],
+            key=lambda x: PART_TYPE_META[x[0]]['label']
+        )
+        for bkey in active_branches
+    }
+
+    # A branch's cell must be wide enough to hold its own box AND all its child
+    # pills side by side — otherwise adjacent branches' pills collide.
+    cell_widths = []
+    for bkey in active_branches:
+        nc = len(branch_children[bkey])
+        content_w = nc * CHILD_W + max(nc - 1, 0) * CHILD_GAP
+        cell_widths.append(max(BRANCH_W, content_w))
+
+    total_w = sum(cell_widths) + max(n - 1, 0) * CELL_GAP + 2 * MARGIN
+    extra_margin = max(0, (MIN_TOTAL_W - total_w) / 2)
+    margin = MARGIN + extra_margin
+    W = int(total_w + 2 * extra_margin)
+
+    cell_left = []
+    x = margin
+    for w in cell_widths:
+        cell_left.append(x)
+        x += w + CELL_GAP
+
+    branch_cx = [int(cell_left[i] + cell_widths[i] / 2) for i in range(n)]
+    ROOT_CX   = W // 2
 
     elems = []
     elems.append('''<defs>
@@ -161,18 +189,15 @@ def build_svg_tree(modality, total_codes, part_data):
           fill="{bc['sub']}" font-size="11" font-family="-apple-system,sans-serif">{subtitle}</text>
   </g>''')
 
-        # Child pills
-        children = sorted(
-            [(pt, vals) for pt, vals in part_data.items()
-             if pt in PART_TYPE_META and PART_TYPE_META[pt]['branch'] == bkey],
-            key=lambda x: PART_TYPE_META[x[0]]['label']
-        )
+        # Child pills — each branch's cell was pre-sized to fit these, so no
+        # clamping/overlap-avoidance is needed here.
+        children = branch_children[bkey]
         nc = len(children)
         if nc == 0:
             continue
 
         total_cw   = nc * CHILD_W + (nc - 1) * CHILD_GAP
-        start_x    = max(10, min(bcx - total_cw // 2, W - 10 - total_cw))
+        start_x    = bcx - total_cw // 2
 
         for j, (pt, vals) in enumerate(children):
             clabel    = PART_TYPE_META[pt]['label']

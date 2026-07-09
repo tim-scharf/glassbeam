@@ -56,21 +56,31 @@ def create_region_sets(df):
     return region_sets
 
 
-def triplet_generator(df, batch_size=32):
+def triplet_generator(df, batch_size=32, hard_ratio=0.0, region_groups=None):
     """
     Generate triplets: (query, positive, negative)
 
     For each triplet:
     - Positive set: random region set {region, focus1, focus2, ...}
     - Query, Positive: 2 random elements from positive set (same region = similar)
-    - Negative: 1 random element from any other region set (different region = dissimilar)
+    - Negative: 1 random element
+      - With prob hard_ratio: from SAME group (harder negative)
+      - Else: from DIFFERENT group (easy negative)
+
+    region_groups: dict mapping group_name -> [region1, region2, ...]
     """
     import random
 
     region_sets = create_region_sets(df)
     region_list = list(region_sets.keys())
-    # Flatten all elements from non-positive regions for fast negative sampling
     all_regions_flat = {r: list(s) for r, s in region_sets.items()}
+
+    # Build region to group mapping if provided
+    region_to_group = {}
+    if region_groups:
+        for group_name, regions in region_groups.items():
+            for region in regions:
+                region_to_group[region] = group_name
 
     while True:
         batch = []
@@ -84,12 +94,33 @@ def triplet_generator(df, batch_size=32):
             if len(pos_set_list) >= 2:
                 query, positive = random.sample(pos_set_list, 2)
             else:
-                # Fallback if region has <2 elements
                 query = positive = random.choice(pos_set_list)
 
-            # Sample negative from any other region
-            other_regions = [r for r in region_list if r != pos_region]
-            neg_region = random.choice(other_regions)
+            # Sample negative
+            if region_groups and random.random() < hard_ratio:
+                # Hard negative: from same group
+                pos_group = region_to_group.get(pos_region)
+                if pos_group:
+                    same_group_regions = [r for r in region_groups[pos_group] if r != pos_region]
+                    if same_group_regions:
+                        neg_region = random.choice(same_group_regions)
+                    else:
+                        # Fallback to any other region
+                        neg_region = random.choice([r for r in region_list if r != pos_region])
+                else:
+                    neg_region = random.choice([r for r in region_list if r != pos_region])
+            else:
+                # Easy negative: from different group
+                if region_groups:
+                    pos_group = region_to_group.get(pos_region)
+                    other_group_regions = [r for r in region_list if region_to_group.get(r) != pos_group]
+                    if other_group_regions:
+                        neg_region = random.choice(other_group_regions)
+                    else:
+                        neg_region = random.choice([r for r in region_list if r != pos_region])
+                else:
+                    neg_region = random.choice([r for r in region_list if r != pos_region])
+
             negative = random.choice(all_regions_flat[neg_region])
 
             batch.append((query, positive, negative))
@@ -97,14 +128,15 @@ def triplet_generator(df, batch_size=32):
         yield batch
 
 
-def save_triplets(num_triplets=10000, output_path='output/triplet_data.csv'):
+def save_triplets(num_triplets=10000, output_path='output/triplet_data.csv', hard_ratio=0.0, region_groups=None):
     """Generate and save triplets to CSV."""
     import csv
 
     df = create_mapping_dataframe()
-    gen = triplet_generator(df, batch_size=32)
+    gen = triplet_generator(df, batch_size=32, hard_ratio=hard_ratio, region_groups=region_groups)
 
-    print(f"Generating {num_triplets:,} triplets...")
+    hard_str = f" (hard_ratio={hard_ratio})" if hard_ratio > 0 else ""
+    print(f"Generating {num_triplets:,} triplets{hard_str}...")
 
     triplets = []
     batches_needed = (num_triplets + 31) // 32
@@ -131,23 +163,49 @@ def save_triplets(num_triplets=10000, output_path='output/triplet_data.csv'):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Generate triplet data with optional hard negatives')
+    parser.add_argument('--num', type=int, default=100000, help='Number of triplets to generate')
+    parser.add_argument('--hard-ratio', type=float, default=0.0, help='Ratio of hard negatives (0-1)')
+    parser.add_argument('--output', type=str, default='output/triplet_data.csv', help='Output CSV path')
+    args = parser.parse_args()
+
     print("Loading focus→region ontology mapping...\n")
 
     df = create_mapping_dataframe()
 
     print(f"Created focus→region dataframe: {len(df)} rows × {len(df.columns)} columns\n")
 
+    # Define region groups for hard negative mining
+    region_groups = {
+        'upper': ['Head', 'Neck', 'Chest'],
+        'core': ['Abdomen', 'Pelvis', 'Spine'],
+        'limbs': ['Upper extremity', 'Lower extremity'],
+        'all': ['Whole Body'],
+    }
+
+    print("Region groups:")
+    for group_name, regions in region_groups.items():
+        print(f"  {group_name}: {regions}")
+    print()
+
     print("Testing triplet generator:\n")
-    gen = triplet_generator(df, batch_size=5)
+    gen = triplet_generator(df, batch_size=5, hard_ratio=args.hard_ratio, region_groups=region_groups)
     batch = next(gen)
 
-    print(f"{'Query':<10} {'Positive':<40} {'Negative':<40}")
-    print("-" * 90)
+    print(f"{'Query':<20} {'Positive':<30} {'Negative':<30}")
+    print("-" * 80)
     for query, positive, negative in batch:
-        print(f"{query:<10} {positive:<40} {negative:<40}")
+        print(f"{query:<20} {positive:<30} {negative:<30}")
 
-    print("\n\nSaving 10k triplets to CSV...")
-    save_triplets(num_triplets=10000)
+    print(f"\n\nSaving {args.num:,} triplets to {args.output}...")
+    save_triplets(
+        num_triplets=args.num,
+        output_path=args.output,
+        hard_ratio=args.hard_ratio,
+        region_groups=region_groups
+    )
 
 
 if __name__ == '__main__':
