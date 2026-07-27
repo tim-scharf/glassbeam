@@ -72,6 +72,7 @@ DEFAULT_OUT = ROOT_DIR / "data" / "region_focus_ontology.json"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from ontology_mapper import GLOBAL_REGIONS
+from modality_architecture import load_modality_architecture, attribute_applies
 
 # ── Region keyword rules ────────────────────────────────────────────────────
 
@@ -289,15 +290,22 @@ def classify_region_focus(raw_text):
     return result
 
 
-def build_region_focus(df):
-    """Classify every unique study_desc_raw and bucket them by region -> focus."""
+def build_region_focus(df, architecture):
+    """Classify every unique study_desc_raw and bucket them by region -> focus.
+
+    Modalities where "region" isn't listed for them in
+    modality_model_architecture.json are forced to "Unspecified" -- the
+    routing table is authoritative, not just a side effect of the text
+    happening to be silent for those modalities (e.g. MG, where region is
+    always breast and this model deliberately isn't run).
+    """
     buckets = {region: defaultdict(set) for region in GLOBAL_REGIONS}
     unspecified = set()
 
-    for (raw,) in df[["study_desc_raw"]].itertuples(index=False):
+    for raw, modality in df[["study_desc_raw", "modality"]].itertuples(index=False):
         if not isinstance(raw, str):
             continue
-        region_foci = classify_region_focus(raw)
+        region_foci = classify_region_focus(raw) if attribute_applies(modality, "region", architecture) else {}
         if not region_foci:
             unspecified.add(raw)
             continue
@@ -318,9 +326,15 @@ def main():
     parser.add_argument("--csv", default=str(DEFAULT_CSV), help="Path to glassbeam_data.csv")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="Path to write region_focus_ontology.json")
     parser.add_argument("--query", default=None, help="Classify a single string instead of processing the CSV")
+    parser.add_argument("--modality", default=None, help="Modality code to use with --query (e.g. MR, MG)")
     args = parser.parse_args()
 
+    architecture = load_modality_architecture()
+
     if args.query is not None:
+        if args.modality and not attribute_applies(args.modality, "region", architecture):
+            print(f"Unspecified  <-  {args.query!r} (modality={args.modality} excluded from region/focus by modality_model_architecture.json)")
+            return
         result = classify_region_focus(args.query)
         if not result:
             print(f"Unspecified  <-  {args.query!r}")
@@ -330,7 +344,7 @@ def main():
         return
 
     df = pd.read_csv(args.csv)
-    result = build_region_focus(df)
+    result = build_region_focus(df, architecture)
 
     out_path = Path(args.out)
     out_path.write_text(json.dumps(result, indent=2))

@@ -38,6 +38,7 @@ Usage:
 import argparse
 import json
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -47,6 +48,9 @@ SCRIPT_DIR = Path(__file__).parent
 ROOT_DIR = SCRIPT_DIR.parent
 DEFAULT_CSV = ROOT_DIR / "output" / "glassbeam_data.csv"
 DEFAULT_OUT = ROOT_DIR / "data" / "contrast_timing.json"
+
+sys.path.insert(0, str(SCRIPT_DIR))
+from modality_architecture import load_modality_architecture, attribute_applies
 
 CATEGORIES = ["With and without", "Without", "With", "Unspecified"]
 
@@ -146,13 +150,22 @@ def classify_contrast(raw_text, modality=None):
     return "Unspecified"
 
 
-def build_contrast_timing(df):
-    """Classify every unique study_desc_raw and bucket them by category."""
+def build_contrast_timing(df, architecture):
+    """Classify every unique study_desc_raw and bucket them by category.
+
+    Modalities where "contrast" isn't listed for them in
+    modality_model_architecture.json are forced to "Unspecified" -- the
+    routing table is authoritative, not just a side effect of the text
+    happening to be silent for those modalities.
+    """
     buckets = defaultdict(set)
     for raw, modality in df[["study_desc_raw", "modality"]].itertuples(index=False):
         if not isinstance(raw, str):
             continue
-        category = classify_contrast(raw, modality)
+        if attribute_applies(modality, "contrast", architecture):
+            category = classify_contrast(raw, modality)
+        else:
+            category = "Unspecified"
         buckets[category].add(raw)
 
     return {category: sorted(buckets.get(category, [])) for category in CATEGORIES}
@@ -166,13 +179,19 @@ def main():
     parser.add_argument("--modality", default=None, help="Modality code to use with --query (e.g. MR, CT)")
     args = parser.parse_args()
 
+    architecture = load_modality_architecture()
+
     if args.query is not None:
-        result = classify_contrast(args.query, args.modality)
-        print(f"{result}  <-  {args.query!r} (modality={args.modality})")
+        if args.modality and not attribute_applies(args.modality, "contrast", architecture):
+            result = "Unspecified"
+            print(f"{result}  <-  {args.query!r} (modality={args.modality} excluded from contrast by modality_model_architecture.json)")
+        else:
+            result = classify_contrast(args.query, args.modality)
+            print(f"{result}  <-  {args.query!r} (modality={args.modality})")
         return
 
     df = pd.read_csv(args.csv)
-    result = build_contrast_timing(df)
+    result = build_contrast_timing(df, architecture)
 
     out_path = Path(args.out)
     out_path.write_text(json.dumps(result, indent=2))

@@ -38,6 +38,7 @@ Usage:
 import argparse
 import json
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -47,6 +48,9 @@ SCRIPT_DIR = Path(__file__).parent
 ROOT_DIR = SCRIPT_DIR.parent
 DEFAULT_CSV = ROOT_DIR / "output" / "glassbeam_data.csv"
 DEFAULT_OUT = ROOT_DIR / "data" / "laterality.json"
+
+sys.path.insert(0, str(SCRIPT_DIR))
+from modality_architecture import load_modality_architecture, attribute_applies
 
 CATEGORIES = ["Unspecified", "Right", "Left", "Bilateral"]
 
@@ -131,13 +135,22 @@ def classify_laterality(raw_text):
     return "Unspecified"
 
 
-def build_laterality(df):
-    """Classify every unique study_desc_raw and bucket them by category."""
+def build_laterality(df, architecture):
+    """Classify every unique study_desc_raw and bucket them by category.
+
+    Modalities where "laterality" isn't listed for them in
+    modality_model_architecture.json are forced to "Unspecified" -- the
+    routing table is authoritative, not just a side effect of the text
+    happening to be silent for those modalities.
+    """
     buckets = defaultdict(set)
-    for (raw,) in df[["study_desc_raw"]].itertuples(index=False):
+    for raw, modality in df[["study_desc_raw", "modality"]].itertuples(index=False):
         if not isinstance(raw, str):
             continue
-        category = classify_laterality(raw)
+        if attribute_applies(modality, "laterality", architecture):
+            category = classify_laterality(raw)
+        else:
+            category = "Unspecified"
         buckets[category].add(raw)
 
     return {category: sorted(buckets.get(category, [])) for category in CATEGORIES}
@@ -148,15 +161,22 @@ def main():
     parser.add_argument("--csv", default=str(DEFAULT_CSV), help="Path to glassbeam_data.csv")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="Path to write laterality.json")
     parser.add_argument("--query", default=None, help="Classify a single string instead of processing the CSV")
+    parser.add_argument("--modality", default=None, help="Modality code to use with --query (e.g. MR, NM)")
     args = parser.parse_args()
 
+    architecture = load_modality_architecture()
+
     if args.query is not None:
-        result = classify_laterality(args.query)
-        print(f"{result}  <-  {args.query!r}")
+        if args.modality and not attribute_applies(args.modality, "laterality", architecture):
+            result = "Unspecified"
+            print(f"{result}  <-  {args.query!r} (modality={args.modality} excluded from laterality by modality_model_architecture.json)")
+        else:
+            result = classify_laterality(args.query)
+            print(f"{result}  <-  {args.query!r}")
         return
 
     df = pd.read_csv(args.csv)
-    result = build_laterality(df)
+    result = build_laterality(df, architecture)
 
     out_path = Path(args.out)
     out_path.write_text(json.dumps(result, indent=2))
