@@ -46,9 +46,9 @@ Approach
    "unspecified" bucket. "Whole Body" has no sub-foci; everything there is
    bucketed as "unspecified".
 
-The region set (9 GLOBAL_REGIONS, imported from ontology_mapper.py) is
-fixed. The foci are not -- FOCUS_KEYWORDS is meant to keep growing as new
-raw descriptions surface anatomy terms not yet covered.
+The region set (9 GLOBAL_REGIONS below) is fixed. The foci are not --
+FOCUS_KEYWORDS is meant to keep growing as new raw descriptions surface
+anatomy terms not yet covered.
 
 Usage:
     python3 scripts/region_focus_extractor.py
@@ -71,8 +71,22 @@ DEFAULT_CSV = ROOT_DIR / "output" / "glassbeam_data.csv"
 DEFAULT_OUT = ROOT_DIR / "data" / "region_focus_ontology.json"
 
 sys.path.insert(0, str(SCRIPT_DIR))
-from ontology_mapper import GLOBAL_REGIONS
 from modality_architecture import load_modality_architecture, attribute_applies
+
+# 9 canonical anatomical regions covering 96.9% of region mentions in the
+# LOINC Radiology Playbook analysis (Spine included as the hierarchical
+# parent of cervical/thoracic/lumbar subdivisions).
+GLOBAL_REGIONS = [
+    "Head",
+    "Neck",
+    "Chest",
+    "Abdomen",
+    "Pelvis",
+    "Spine",
+    "Upper extremity",
+    "Lower extremity",
+    "Whole Body",
+]
 
 # ── Region keyword rules ────────────────────────────────────────────────────
 
@@ -242,43 +256,60 @@ FOCUS_KEYWORDS = {
 _CARM_RE = re.compile(r"\bC[\s\-_/^]*ARM\b")
 _TOKEN_RE = re.compile(r"[A-Za-z]+")
 
+# Best (lowest-rank) tier wins when more than one mechanism corroborates the
+# same region -- e.g. an explicit keyword always dominates a weaker fallback
+# that also would have fired.
+_TIER_RANK = {"explicit": 0, "combo": 1, "glued_fallback": 2, "last_resort": 3}
 
-def classify_region_focus(raw_text):
-    """Return {region: {focus, ...}} for a single raw study description."""
+
+def classify_region_focus_detailed(raw_text):
+    """Return {region: {"foci": {focus, ...}, "tier": tier}} for a single raw
+    study description. tier reflects which rule stage found that region:
+    "explicit" (a REGION_KEYWORDS whole-word match), "combo" (a combined-
+    region token like CAP/ABDPEL, or the extremity/whole-body phrase
+    rules), "glued_fallback" (the no-separator scanner-protocol substring
+    fallback), or "last_resort" (bare BONE/STROKE).
+    """
     if not isinstance(raw_text, str) or not raw_text.strip():
         return {}
 
     text = _CARM_RE.sub(" ", raw_text.upper())
     tokens = set(_TOKEN_RE.findall(text))
 
-    regions = set()
+    region_tier = {}
+
+    def note(region, tier):
+        if region not in region_tier or _TIER_RANK[tier] < _TIER_RANK[region_tier[region]]:
+            region_tier[region] = tier
+
     for region, keywords in REGION_KEYWORDS.items():
         if tokens & keywords:
-            regions.add(region)
+            note(region, "explicit")
     for combo_token, combo_regions in COMBO_KEYWORDS.items():
         if combo_token in tokens:
-            regions.update(combo_regions)
+            for region in combo_regions:
+                note(region, "combo")
     if tokens & EXTREMITY_TOKENS:
         if tokens & UPPER_TOKENS:
-            regions.add("Upper extremity")
+            note("Upper extremity", "combo")
         if tokens & LOWER_TOKENS:
-            regions.add("Lower extremity")
+            note("Lower extremity", "combo")
     if "WHOLE" in tokens and "BODY" in tokens:
-        regions.add("Whole Body")
+        note("Whole Body", "combo")
 
-    if not regions:
+    if not region_tier:
         for tok in tokens:
             for stem, region in GLUED_STEM_FALLBACK.items():
                 if stem in tok:
-                    regions.add(region)
+                    note(region, "glued_fallback")
 
-    if not regions:
+    if not region_tier:
         for kw, region in LAST_RESORT_KEYWORDS.items():
             if kw in tokens:
-                regions.add(region)
+                note(region, "last_resort")
 
     result = {}
-    for region in regions:
+    for region, tier in region_tier.items():
         foci = {focus for focus, kws in FOCUS_KEYWORDS.get(region, {}).items() if tokens & kws}
         if region == "Spine" and "SPINE" in tokens:
             # Level abbreviations only ever appear glued to/beside "SPINE"
@@ -286,8 +317,13 @@ def classify_region_focus(raw_text):
             # bare-letter check is scoped to when SPINE is already present
             # -- it never runs as a region signal on its own.
             foci |= {SPINE_LEVEL_LETTERS[letter] for letter in SPINE_LEVEL_LETTERS if letter in tokens}
-        result[region] = foci if foci else {"unspecified"}
+        result[region] = {"foci": foci if foci else {"unspecified"}, "tier": tier}
     return result
+
+
+def classify_region_focus(raw_text):
+    """Return {region: {focus, ...}} for a single raw study description."""
+    return {region: info["foci"] for region, info in classify_region_focus_detailed(raw_text).items()}
 
 
 def build_region_focus(df, architecture):

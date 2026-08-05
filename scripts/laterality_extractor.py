@@ -104,35 +104,49 @@ def normalize(text):
     return t
 
 
-def classify_laterality(raw_text):
-    """Return one of CATEGORIES for a single raw study description."""
+def classify_laterality_detailed(raw_text):
+    """Return (category, tier) for a single raw study description.
+
+    tier is "explicit" when the winning side(s) came from an unambiguous
+    marker (LEFT/RIGHT/LT/RT/BILAT/the asterisk convention), "bare_letter"
+    when the *weakest* contributing side came only from a bare L/R token,
+    and "none" when nothing matched at all. For Bilateral, the weaker of
+    the two contributing sides determines the tier (weakest link).
+    """
     if not isinstance(raw_text, str) or not raw_text.strip():
-        return "Unspecified"
+        return "Unspecified", "none"
 
     norm = normalize(raw_text)
 
     if BILATERAL_RE.search(norm):
-        return "Bilateral"
+        return "Bilateral", "explicit"
 
     search_space = _COMPARISON_RE.split(norm)[0]
 
-    has_left = bool(LEFT_FAMILY_RE.search(search_space))
-    has_right = bool(RIGHT_FAMILY_RE.search(search_space))
+    has_left_explicit = bool(LEFT_FAMILY_RE.search(search_space))
+    has_right_explicit = bool(RIGHT_FAMILY_RE.search(search_space))
 
     # Bare "L" is untrustworthy near "SPINE" (lumbar spine level, not a
     # side); bare "R" has no such collision in this corpus.
-    if not has_left and BARE_L_RE.search(search_space) and "SPINE" not in norm:
-        has_left = True
-    if not has_right and BARE_R_RE.search(search_space):
-        has_right = True
+    has_left_bare = not has_left_explicit and bool(BARE_L_RE.search(search_space)) and "SPINE" not in norm
+    has_right_bare = not has_right_explicit and bool(BARE_R_RE.search(search_space))
+
+    has_left = has_left_explicit or has_left_bare
+    has_right = has_right_explicit or has_right_bare
 
     if has_left and has_right:
-        return "Bilateral"
+        tier = "explicit" if (has_left_explicit and has_right_explicit) else "bare_letter"
+        return "Bilateral", tier
     if has_left:
-        return "Left"
+        return "Left", "explicit" if has_left_explicit else "bare_letter"
     if has_right:
-        return "Right"
-    return "Unspecified"
+        return "Right", "explicit" if has_right_explicit else "bare_letter"
+    return "Unspecified", "none"
+
+
+def classify_laterality(raw_text):
+    """Return one of CATEGORIES for a single raw study description."""
+    return classify_laterality_detailed(raw_text)[0]
 
 
 def build_laterality(df, architecture):

@@ -54,8 +54,9 @@ from modality_architecture import load_modality_architecture, attribute_applies
 
 CATEGORIES = ["With and without", "Without", "With", "Unspecified"]
 
-# Modalities where "contrast" is a defined extractable attribute
-# (see MULTI_LABEL_EXTRACTION['contrast'] in ontology_mapper.py).
+# Modalities where the bare-W/WO tail heuristic (see below) is trusted --
+# scanner protocol names put the timing qualifier in the last few words
+# for these two, per modality_model_architecture.json.
 TAIL_HEURISTIC_MODALITIES = {"MR", "CT"}
 TAIL_WINDOW = 3
 
@@ -117,10 +118,17 @@ def normalize(text):
     return t
 
 
-def classify_contrast(raw_text, modality=None):
-    """Return one of CATEGORIES for a single raw study description."""
+def classify_contrast_detailed(raw_text, modality=None):
+    """Return (category, tier) for a single raw study description.
+
+    tier is "explicit" when the word CONTRAST and a WITH/WITHOUT marker are
+    both present, "contrast_named_no_timing" when CONTRAST is named but no
+    timing qualifier is (defaults to "With"), "tail_heuristic" when the
+    category came only from the bare-W/WO last-3-words heuristic (no
+    CONTRAST word anywhere), and "none" when nothing matched.
+    """
     if not isinstance(raw_text, str) or not raw_text.strip():
-        return "Unspecified"
+        return "Unspecified", "none"
 
     norm = normalize(raw_text)
     has_contrast_word = bool(CONTRAST_RE.search(norm))
@@ -131,23 +139,29 @@ def classify_contrast(raw_text, modality=None):
         tokens = _TOKEN_RE.findall(norm)
         search_space = " ".join(tokens[-TAIL_WINDOW:])
     else:
-        return "Unspecified"
+        return "Unspecified", "none"
 
     has_without = bool(WITHOUT_FAMILY_RE.search(search_space))
     has_with = bool(WITH_FAMILY_RE.search(search_space))
+    tier = "explicit" if has_contrast_word else "tail_heuristic"
 
     if has_without and has_with:
-        return "With and without"
+        return "With and without", tier
     if has_without:
-        return "Without"
+        return "Without", tier
     if has_with:
-        return "With"
+        return "With", tier
     if has_contrast_word:
         # Contrast material is named (e.g. "BARIUM ENEMA SGL CONTRAST",
         # "CORONARY CTA WITH CONTRAST") but no explicit timing qualifier
         # -> contrast was administered.
-        return "With"
-    return "Unspecified"
+        return "With", "contrast_named_no_timing"
+    return "Unspecified", "none"
+
+
+def classify_contrast(raw_text, modality=None):
+    """Return one of CATEGORIES for a single raw study description."""
+    return classify_contrast_detailed(raw_text, modality)[0]
 
 
 def build_contrast_timing(df, architecture):

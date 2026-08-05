@@ -7,14 +7,21 @@ data/modality_model_architecture.json exactly once, and calls into
 whichever of the 4 attribute models actually apply to that modality --
 region/focus, laterality, contrast, technique_study_type. Each model's own
 extractor script still owns its classification logic (classify_region_focus,
-classify_laterality, classify_contrast, classify_technique); this file only
-orchestrates the routing, it does not reimplement any rules.
+classify_laterality, classify_contrast, classify_technique, and their
+*_detailed() siblings that additionally report which rule tier fired);
+this file only orchestrates the routing, it does not reimplement any rules.
 
 An attribute that doesn't apply to a modality is reported as `None`
 ("not applicable"), distinct from a model running and finding no signal
 (e.g. laterality's "Unspecified", technique's "Other") -- so a consumer can
 tell "MG doesn't get a contrast model" apart from "MG got the contrast
 model and it found nothing."
+
+Every prediction also gets a confidence score (see confidence.py): a
+rule-tier base score, penalized by how much of the description's
+vocabulary was never seen in the training corpus at all ("novelty").
+`novelty_score` itself is reported once per record since it's a property
+of the text, not any one attribute.
 
 Usage:
     python3 scripts/classify.py --modality CT --text "CT CHEST ABDOMEN PELVIS W AND WO CONTRAST"
@@ -35,47 +42,70 @@ DEFAULT_OUT = ROOT_DIR / "data" / "classified_studies.json"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from modality_architecture import load_modality_architecture, attribute_applies
-from region_focus_extractor import classify_region_focus
-from laterality_extractor import classify_laterality
-from contrast_extractor import classify_contrast
-from technique_extractor import classify_technique
+from region_focus_extractor import classify_region_focus_detailed
+from laterality_extractor import classify_laterality_detailed
+from contrast_extractor import classify_contrast_detailed
+from technique_extractor import classify_technique_detailed
+from confidence import compute_novelty, tier_confidence
 
 
 def classify(modality, study_desc_raw, architecture):
     """Route (modality, study_desc_raw) through every applicable model.
 
-    Returns a dict with one key per attribute. A value of None means the
-    routing table excludes that attribute for this modality; any other
-    value is whatever the underlying model returned.
+    Returns a dict with one key per attribute plus a `<attribute>_confidence`
+    sibling for each. A value of None (for both the prediction and its
+    confidence) means the routing table excludes that attribute for this
+    modality; any other value is whatever the underlying model returned.
     """
-    region_focus = (
-        classify_region_focus(study_desc_raw)
-        if attribute_applies(modality, "region", architecture)
-        else None
-    )
-    laterality = (
-        classify_laterality(study_desc_raw)
-        if attribute_applies(modality, "laterality", architecture)
-        else None
-    )
-    contrast = (
-        classify_contrast(study_desc_raw, modality)
-        if attribute_applies(modality, "contrast", architecture)
-        else None
-    )
-    technique_study_type = (
-        classify_technique(study_desc_raw, modality)
-        if attribute_applies(modality, "technique_study_type", architecture)
-        else None
-    )
+    novelty = compute_novelty(study_desc_raw)
+
+    if attribute_applies(modality, "region", architecture):
+        region_detail = classify_region_focus_detailed(study_desc_raw)
+        region_focus = {region: sorted(info["foci"]) for region, info in region_detail.items()}
+        if region_detail:
+            region_focus_confidence = {
+                region: tier_confidence("region_focus", info["tier"], novelty)
+                for region, info in region_detail.items()
+            }
+        else:
+            region_focus_confidence = tier_confidence("region_focus", "none", novelty)
+    else:
+        region_focus = None
+        region_focus_confidence = None
+
+    if attribute_applies(modality, "laterality", architecture):
+        laterality, lat_tier = classify_laterality_detailed(study_desc_raw)
+        laterality_confidence = tier_confidence("laterality", lat_tier, novelty)
+    else:
+        laterality = None
+        laterality_confidence = None
+
+    if attribute_applies(modality, "contrast", architecture):
+        contrast, contrast_tier = classify_contrast_detailed(study_desc_raw, modality)
+        contrast_confidence = tier_confidence("contrast", contrast_tier, novelty)
+    else:
+        contrast = None
+        contrast_confidence = None
+
+    if attribute_applies(modality, "technique_study_type", architecture):
+        technique_study_type, tech_tier = classify_technique_detailed(study_desc_raw, modality)
+        technique_confidence = tier_confidence("technique_study_type", tech_tier, novelty)
+    else:
+        technique_study_type = None
+        technique_confidence = None
 
     return {
         "modality": modality,
         "study_desc_raw": study_desc_raw,
+        "novelty_score": round(novelty, 3),
         "region_focus": region_focus,
+        "region_focus_confidence": region_focus_confidence,
         "laterality": laterality,
+        "laterality_confidence": laterality_confidence,
         "contrast": contrast,
+        "contrast_confidence": contrast_confidence,
         "technique_study_type": technique_study_type,
+        "technique_study_type_confidence": technique_confidence,
     }
 
 

@@ -140,20 +140,32 @@ RULES_BY_MODALITY = {"NM": NM_RULES, "MG": MG_RULES}
 CATEGORIES_BY_MODALITY = {"NM": NM_CATEGORIES, "MG": MG_CATEGORIES}
 
 
-def classify_technique(raw_text, modality):
-    """Return a technique/study-type category for a single raw study description."""
+def classify_technique_detailed(raw_text, modality):
+    """Return (category, tier) for a single raw study description.
+
+    tier is "unique_match" when exactly one category's pattern matched,
+    "collision" when 2+ categories' patterns both matched and priority
+    order broke the tie (the returned category is still the winner, just
+    a less confident one), and "none" when nothing matched (-> "Other").
+    """
     if not isinstance(raw_text, str) or not raw_text.strip():
-        return "Other"
+        return "Other", "none"
 
     rules = RULES_BY_MODALITY.get(modality)
     if rules is None:
-        return "Other"
+        return "Other", "none"
 
     norm = raw_text.upper()
-    for category, pattern in rules:
-        if pattern.search(norm):
-            return category
-    return "Other"
+    matches = [category for category, pattern in rules if pattern.search(norm)]
+    if not matches:
+        return "Other", "none"
+    tier = "unique_match" if len(matches) == 1 else "collision"
+    return matches[0], tier
+
+
+def classify_technique(raw_text, modality):
+    """Return a technique/study-type category for a single raw study description."""
+    return classify_technique_detailed(raw_text, modality)[0]
 
 
 def build_technique(df, architecture):
