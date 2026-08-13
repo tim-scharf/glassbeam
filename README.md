@@ -5,6 +5,12 @@ strings scanners/EHRs produce, e.g. `"CT CHEST ABDOMEN PELVIS W AND WO
 CONTRAST"`) into structured attributes: **region/focus**, **laterality**,
 **contrast timing**, and **technique/study type**.
 
+The classifier itself is pure Python — the extractors in
+`scripts/*_extractor.py` are plain `re`/`json` string matching against the
+standard library, no ML framework, no embeddings, no GPU. `pandas` is only
+used for reading/writing CSVs and batch iteration; swap it for stdlib
+`csv` and the pipeline would run with zero third-party dependencies.
+
 ## How it works
 
 **The rules were built offline with LLM assistance, not learned at
