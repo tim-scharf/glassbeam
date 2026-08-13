@@ -1,4 +1,4 @@
-# hf-intel
+# Glassbeam Study Classifier
 
 Classifies raw radiology study descriptions (the free-text `study_desc_raw`
 strings scanners/EHRs produce, e.g. `"CT CHEST ABDOMEN PELVIS W AND WO
