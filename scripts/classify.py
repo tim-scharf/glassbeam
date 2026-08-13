@@ -112,10 +112,14 @@ def classify(modality, study_desc_raw, architecture):
 def build_classified(df, architecture):
     """Classify every unique (modality, study_desc_raw) pair in the CSV."""
     pairs = df[["modality", "study_desc_raw"]].dropna().drop_duplicates()
-    return [
-        classify(modality, raw, architecture)
-        for modality, raw in pairs.itertuples(index=False)
-    ]
+    warned = set()
+    results = []
+    for modality, raw in pairs.itertuples(index=False):
+        if modality not in architecture and modality not in warned:
+            print(f"WARNING: unknown modality {modality!r} -- not in modality routing table, all attributes will be None", file=sys.stderr)
+            warned.add(modality)
+        results.append(classify(modality, raw, architecture))
+    return results
 
 
 def main():
@@ -131,6 +135,8 @@ def main():
     if args.text is not None:
         if not args.modality:
             parser.error("--text requires --modality")
+        if args.modality not in architecture:
+            print(f"WARNING: unknown modality {args.modality!r} -- not in modality routing table, all attributes will be None", file=sys.stderr)
         result = classify(args.modality, args.text, architecture)
         print(json.dumps(result, indent=2, default=sorted))
         return

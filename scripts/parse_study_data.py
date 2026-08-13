@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 import pandas as pd
 import warnings
@@ -47,12 +48,15 @@ def read_and_combine_files(xlsx_files):
     for idx, file_path in enumerate(xlsx_files, 1):
         customer = extract_customer_name(file_path)
         try:
-            print(f"  [{idx}/{len(xlsx_files)}] Reading {customer}...")
-            df = pd.read_excel(file_path)
+            print(f"  [{idx}/{len(xlsx_files)}] Reading {customer}...", end='', flush=True)
+            start = time.time()
+            df = pd.read_excel(file_path, engine='calamine')
             df['customer'] = customer
             dfs.append(df)
+            elapsed = time.time() - start
+            print(f" ✓ {len(df):,} records ({elapsed:.2f}s)")
         except Exception as e:
-            print(f"    SKIP: {e}")
+            print(f" ✗ SKIP: {e}")
             continue
 
     if not dfs:
